@@ -1,7 +1,6 @@
 use anyhow::Result;
 use glam::{ivec2, vec2, vec3, IVec2, Vec2, Vec3};
 use image::{imageops::flip_vertical_in_place, ImageBuffer, Rgb, RgbImage};
-use rand::RngCore;
 use wavefront::Obj;
 
 type Color = Rgb<u8>;
@@ -22,23 +21,28 @@ fn main() -> Result<()> {
 
     let half_width = width as f32 / 2f32;
     let half_height = height as f32 / 2f32;
-    let mut rng = rand::thread_rng();
+
+    let light_dir = vec3(0f32, 0f32, -1f32);
 
     for poly in model.polygons() {
         let mut screen_coords = [Vec2::ZERO; 3];
+        let mut world_coords = [Vec3::ZERO; 3];
+
         for i in 0..3 {
-            let world_coords = poly.vertex(i).unwrap().position();
-            screen_coords[i] = vec2(
-                (world_coords[0] + 1f32) * half_width,
-                (world_coords[1] + 1f32) * half_height,
-            );
+            let v = poly.vertex(i).unwrap().position();
+            screen_coords[i] = vec2((v[0] + 1f32) * half_width, (v[1] + 1f32) * half_height);
+            world_coords[i] = v.into();
         }
 
-        let mut color = [0u8; 3];
-        rng.fill_bytes(&mut color);
-        let color = Rgb(color);
+        let n = (world_coords[2] - world_coords[0])
+            .cross(world_coords[1] - world_coords[0])
+            .normalize();
+        let intensity = n.dot(light_dir);
 
-        triangle(screen_coords.map(|v| v.as_ivec2()), &mut image, &color);
+        if intensity > 0f32 {
+            let color = Rgb([(intensity * 255f32) as u8; 3]);
+            triangle(screen_coords.map(|v| v.as_ivec2()), &mut image, &color);
+        }
     }
 
     flip_vertical_in_place(&mut image);
@@ -80,56 +84,6 @@ fn line(mut v0: IVec2, mut v1: IVec2, image: &mut Image, color: &Color) {
             error2 -= dx * 2;
         }
     }
-}
-
-fn triangle_mk1(mut t0: IVec2, mut t1: IVec2, mut t2: IVec2, image: &mut Image, color: &Color) {
-    // degenerate triangle
-    if t0.y == t1.y && t0.y == t2.y {
-        return;
-    }
-    // sort the vertices, t0, t1, t2 lower−to−upper (bubblesort yay!)
-    if t0.y > t1.y {
-        std::mem::swap(&mut t0, &mut t1)
-    }
-    if t0.y > t2.y {
-        std::mem::swap(&mut t0, &mut t2)
-    }
-    if t1.y > t2.y {
-        std::mem::swap(&mut t1, &mut t2)
-    }
-
-    let total_height = t2.y - t0.y;
-
-    for i in 0..total_height {
-        let second_half = i > t1.y - t0.y || t1.y == t0.y;
-        let segment_height = if second_half {
-            t2.y - t1.y
-        } else {
-            t1.y - t0.y
-        };
-
-        let alpha = i as f32 / total_height as f32;
-        let beta = (i - if second_half { t1.y - t0.y } else { 0 }) as f32 / segment_height as f32;
-
-        let mut a = t0 + ((t2 - t0).as_vec2() * alpha).as_ivec2();
-        let mut b = if second_half {
-            t1 + ((t2 - t1).as_vec2() * beta).as_ivec2()
-        } else {
-            t0 + ((t1 - t0).as_vec2() * beta).as_ivec2()
-        };
-
-        if a.x > b.x {
-            std::mem::swap(&mut a, &mut b);
-        }
-
-        for x in a.x..=b.x {
-            image.put_pixel(x as u32, (t0.y + i) as u32, *color);
-        }
-    }
-
-    // line(t0, t1, image, &RED);
-    // line(t1, t2, image, &GREEN);
-    // line(t2, t0, image, &BLUE);
 }
 
 fn barycentric(points: [Vec2; 3], p: Vec2) -> Vec3 {
