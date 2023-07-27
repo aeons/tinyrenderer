@@ -1,38 +1,44 @@
 use anyhow::Result;
-use glam::IVec2;
+use glam::{ivec2, vec2, vec3, IVec2, Vec2, Vec3};
 use image::{imageops::flip_vertical_in_place, ImageBuffer, Rgb, RgbImage};
+use rand::RngCore;
 use wavefront::Obj;
 
 type Color = Rgb<u8>;
 type Image = ImageBuffer<Rgb<u8>, Vec<u8>>;
 
-fn main() -> Result<()> {
-    let white = Rgb([255, 255, 255]);
-    let _red = Rgb([255, 0, 0]);
+const WHITE: Rgb<u8> = Rgb([255, 255, 255]);
+const RED: Rgb<u8> = Rgb([255, 0, 0]);
+const GREEN: Rgb<u8> = Rgb([0, 255, 0]);
+const BLUE: Rgb<u8> = Rgb([0, 0, 255]);
 
-    let width = 1023;
-    let height = 1023;
-    let mut image = RgbImage::new(width + 1, height + 1);
+fn main() -> Result<()> {
+    let size = 1024;
+    let width = size - 1;
+    let height = size - 1;
+    let mut image = RgbImage::new(width, height);
 
     let model = Obj::from_file("./obj/african_head.obj")?;
 
     let half_width = width as f32 / 2f32;
     let half_height = height as f32 / 2f32;
+    let mut rng = rand::thread_rng();
+
     for poly in model.polygons() {
+        let mut screen_coords = [Vec2::ZERO; 3];
         for i in 0..3 {
-            let v0 = poly.vertex(i).unwrap().position();
-            let v1 = poly.vertex((i + 1) % 3).unwrap().position();
-
-            let x0 = (v0[0] + 1f32) * half_width;
-            let y0 = (v0[1] + 1f32) * half_height;
-            let v0 = IVec2::new(x0 as i32, y0 as i32);
-
-            let x1 = (v1[0] + 1f32) * half_width;
-            let y1 = (v1[1] + 1f32) * half_height;
-            let v1 = IVec2::new(x1 as i32, y1 as i32);
-
-            line(v0, v1, &mut image, &white);
+            let world_coords = poly.vertex(i).unwrap().position();
+            screen_coords[i] = vec2(
+                (world_coords[0] + 1f32) * half_width,
+                (world_coords[1] + 1f32) * half_height,
+            );
         }
+
+        let mut color = [0u8; 3];
+        rng.fill_bytes(&mut color);
+        let color = Rgb(color);
+
+        triangle(screen_coords.map(|v| v.as_ivec2()), &mut image, &color);
     }
 
     flip_vertical_in_place(&mut image);
@@ -41,9 +47,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn line(v0: IVec2, v1: IVec2, image: &mut Image, color: &Color) {
-    let (mut v0, mut v1) = (v0, v1);
-
+fn line(mut v0: IVec2, mut v1: IVec2, image: &mut Image, color: &Color) {
     let steep = v0.x.abs_diff(v1.x) < v0.y.abs_diff(v1.y);
     // if the line is steep, we transpose the image
     if steep {
@@ -74,6 +78,103 @@ fn line(v0: IVec2, v1: IVec2, image: &mut Image, color: &Color) {
         if error2 > dx {
             y += slope;
             error2 -= dx * 2;
+        }
+    }
+}
+
+fn triangle_mk1(mut t0: IVec2, mut t1: IVec2, mut t2: IVec2, image: &mut Image, color: &Color) {
+    // degenerate triangle
+    if t0.y == t1.y && t0.y == t2.y {
+        return;
+    }
+    // sort the vertices, t0, t1, t2 lower−to−upper (bubblesort yay!)
+    if t0.y > t1.y {
+        std::mem::swap(&mut t0, &mut t1)
+    }
+    if t0.y > t2.y {
+        std::mem::swap(&mut t0, &mut t2)
+    }
+    if t1.y > t2.y {
+        std::mem::swap(&mut t1, &mut t2)
+    }
+
+    let total_height = t2.y - t0.y;
+
+    for i in 0..total_height {
+        let second_half = i > t1.y - t0.y || t1.y == t0.y;
+        let segment_height = if second_half {
+            t2.y - t1.y
+        } else {
+            t1.y - t0.y
+        };
+
+        let alpha = i as f32 / total_height as f32;
+        let beta = (i - if second_half { t1.y - t0.y } else { 0 }) as f32 / segment_height as f32;
+
+        let mut a = t0 + ((t2 - t0).as_vec2() * alpha).as_ivec2();
+        let mut b = if second_half {
+            t1 + ((t2 - t1).as_vec2() * beta).as_ivec2()
+        } else {
+            t0 + ((t1 - t0).as_vec2() * beta).as_ivec2()
+        };
+
+        if a.x > b.x {
+            std::mem::swap(&mut a, &mut b);
+        }
+
+        for x in a.x..=b.x {
+            image.put_pixel(x as u32, (t0.y + i) as u32, *color);
+        }
+    }
+
+    // line(t0, t1, image, &RED);
+    // line(t1, t2, image, &GREEN);
+    // line(t2, t0, image, &BLUE);
+}
+
+fn barycentric(points: [Vec2; 3], p: Vec2) -> Vec3 {
+    let u = vec3(
+        points[2].x - points[0].x,
+        points[1].x - points[0].x,
+        points[0].x - p.x,
+    )
+    .cross(vec3(
+        points[2].y - points[0].y,
+        points[1].y - points[0].y,
+        points[0].y - p.y,
+    ));
+    // `points` and `p` has integer values as coordinates
+    // so u.z.abs() < 1 means u.z is 0, which means triangle is degenerate
+    // in this case return something with negative coordinates
+    if u.z.abs() < 1f32 {
+        return vec3(-1f32, 1f32, 1f32);
+    }
+
+    vec3(1f32 - (u.x + u.y) / u.z, u.y / u.z, u.x / u.z)
+}
+
+fn triangle(points: [IVec2; 3], image: &mut Image, color: &Color) {
+    let mut bbox_min = ivec2(image.width() as i32 - 1, image.height() as i32 - 1);
+    let mut bbox_max = ivec2(0, 0);
+    let clamp = bbox_min.clone();
+
+    for point in points.iter() {
+        bbox_min.x = i32::max(0, i32::min(bbox_min.x, point.x));
+        bbox_min.y = i32::max(0, i32::min(bbox_min.y, point.y));
+
+        bbox_max.x = i32::min(clamp.x, i32::max(bbox_max.x, point.x));
+        bbox_max.y = i32::min(clamp.y, i32::max(bbox_max.y, point.y));
+    }
+
+    let points = points.map(|p| p.as_vec2());
+    for x in bbox_min.x..=bbox_max.x {
+        for y in bbox_min.y..=bbox_max.y {
+            let bc_screen = barycentric(points, vec2(x as f32, y as f32));
+            if bc_screen.x < 0f32 || bc_screen.y < 0f32 || bc_screen.z < 0f32 {
+                continue;
+            }
+
+            image.put_pixel(x as u32, y as u32, *color);
         }
     }
 }
