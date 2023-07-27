@@ -1,4 +1,5 @@
 use anyhow::Result;
+use glam::IVec2;
 use image::{imageops::flip_vertical_in_place, ImageBuffer, Rgb, RgbImage};
 use wavefront::Obj;
 
@@ -24,12 +25,13 @@ fn main() -> Result<()> {
 
             let x0 = (v0[0] + 1f32) * half_width;
             let y0 = (v0[1] + 1f32) * half_height;
+            let v0 = IVec2::new(x0 as i32, y0 as i32);
+
             let x1 = (v1[0] + 1f32) * half_width;
             let y1 = (v1[1] + 1f32) * half_height;
+            let v1 = IVec2::new(x1 as i32, y1 as i32);
 
-            line(
-                x0 as i32, y0 as i32, x1 as i32, y1 as i32, &mut image, &white,
-            );
+            line(v0, v1, &mut image, &white);
         }
     }
 
@@ -39,28 +41,29 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn line(x0: i32, y0: i32, x1: i32, y1: i32, image: &mut Image, color: &Color) {
-    let (mut x0, mut x1, mut y0, mut y1) = (x0, x1, y0, y1);
+fn line(v0: IVec2, v1: IVec2, image: &mut Image, color: &Color) {
+    let (mut v0, mut v1) = (v0, v1);
+
+    let steep = v0.x.abs_diff(v1.x) < v0.y.abs_diff(v1.y);
     // if the line is steep, we transpose the image
-    let steep = x0.abs_diff(x1) < y0.abs_diff(y1);
     if steep {
-        std::mem::swap(&mut x0, &mut y0);
-        std::mem::swap(&mut x1, &mut y1);
+        std::mem::swap(&mut v0.x, &mut v0.y);
+        std::mem::swap(&mut v1.x, &mut v1.y);
     }
 
     // make it left-to-right
-    if x0 > x1 {
-        std::mem::swap(&mut x0, &mut x1);
-        std::mem::swap(&mut y0, &mut y1);
+    if v0.x > v1.x {
+        std::mem::swap(&mut v0, &mut v1);
     }
 
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let derror2 = i32::abs(dy) * 2;
+    let dx = v1.x - v0.x;
+    let dy = v1.y - v0.y;
+    let derror2 = dy.abs() * 2;
+    let slope = if v1.y > v0.y { 1 } else { -1 };
     let mut error2 = 0;
-    let mut y = y0;
+    let mut y = v0.y;
 
-    for x in x0..=x1 {
+    for x in v0.x..=v1.x {
         if steep {
             image.put_pixel(y as u32, x as u32, *color);
         } else {
@@ -69,7 +72,7 @@ fn line(x0: i32, y0: i32, x1: i32, y1: i32, image: &mut Image, color: &Color) {
 
         error2 += derror2;
         if error2 > dx {
-            y += if y1 > y0 { 1 } else { -1 };
+            y += slope;
             error2 -= dx * 2;
         }
     }
