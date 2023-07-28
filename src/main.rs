@@ -1,10 +1,13 @@
 use anyhow::Result;
 use glam::{vec2, vec3, IVec2, Vec2, Vec3};
-use image::{imageops::flip_vertical_in_place, ImageBuffer, Rgb, RgbImage};
+use image::{
+    imageops::flip_vertical_in_place, io::Reader, DynamicImage, GenericImageView, ImageBuffer,
+    Pixel, Rgb, RgbImage, Rgba, RgbaImage,
+};
 use wavefront::Obj;
 
-type Color = Rgb<u8>;
-type Image = ImageBuffer<Rgb<u8>, Vec<u8>>;
+type Color = Rgba<u8>;
+type Image = ImageBuffer<Rgba<u8>, Vec<u8>>;
 
 const SIZE: u32 = 1024;
 const WIDTH: u32 = SIZE - 1;
@@ -13,13 +16,18 @@ const HEIGHT: u32 = SIZE - 1;
 const HALF_WIDTH: f32 = WIDTH as f32 / 2f32;
 const HALF_HEIGHT: f32 = HEIGHT as f32 / 2f32;
 
-const WHITE: Rgb<u8> = Rgb([255, 255, 255]);
-const RED: Rgb<u8> = Rgb([255, 0, 0]);
-const GREEN: Rgb<u8> = Rgb([0, 255, 0]);
-const BLUE: Rgb<u8> = Rgb([0, 0, 255]);
+const WHITE: Rgba<u8> = Rgba([255, 255, 255, 255]);
+const RED: Rgba<u8> = Rgba([255, 0, 0, 255]);
+const GREEN: Rgba<u8> = Rgba([0, 255, 0, 255]);
+const BLUE: Rgba<u8> = Rgba([0, 0, 255, 255]);
 
 fn main() -> Result<()> {
-    let mut image = RgbImage::new(WIDTH, HEIGHT);
+    let mut image = RgbaImage::new(WIDTH, HEIGHT);
+    let diffuse = {
+        let mut texture = Reader::open("./assets/african_head_diffuse.tga")?.decode()?;
+        flip_vertical_in_place(&mut texture);
+        texture
+    };
 
     let model = Obj::from_file("./obj/african_head.obj")?;
 
@@ -28,12 +36,15 @@ fn main() -> Result<()> {
 
     let mut screen_coords = [Vec3::ZERO; 3];
     let mut world_coords = [Vec3::ZERO; 3];
+    let mut uvs = [Vec3::ZERO; 3];
 
     for poly in model.polygons() {
         for i in 0..3 {
-            let v = poly.vertex(i).unwrap().position().into();
-            world_coords[i] = v;
-            screen_coords[i] = world_to_screen(&v);
+            let v = poly.vertex(i).unwrap();
+            let pos = v.position().into();
+            world_coords[i] = pos;
+            screen_coords[i] = world_to_screen(&pos);
+            uvs[i] = v.uv().unwrap().into();
         }
 
         let n = (world_coords[2] - world_coords[0])
@@ -42,8 +53,14 @@ fn main() -> Result<()> {
         let intensity = n.dot(light_dir);
 
         if intensity > 0f32 {
-            let color = Rgb([(intensity * 255f32) as u8; 3]);
-            triangle(screen_coords, &mut zbuffer, &mut image, &color);
+            triangle(
+                screen_coords,
+                &uvs,
+                &mut zbuffer,
+                &mut image,
+                &diffuse,
+                intensity,
+            );
         }
     }
 
@@ -96,7 +113,14 @@ fn bounding_box(points: &[Vec3]) -> (Vec2, Vec2) {
     (bbox_min, bbox_max)
 }
 
-fn triangle(points: [Vec3; 3], zbuffer: &mut [f32], image: &mut Image, color: &Color) {
+fn triangle(
+    points: [Vec3; 3],
+    uvs: &[Vec3; 3],
+    zbuffer: &mut [f32],
+    image: &mut Image,
+    diffuse: &DynamicImage,
+    intensity: f32,
+) {
     let (bbox_min, bbox_max) = bounding_box(&points);
 
     for x in bbox_min.x as i32..=bbox_max.x as i32 {
@@ -107,14 +131,22 @@ fn triangle(points: [Vec3; 3], zbuffer: &mut [f32], image: &mut Image, color: &C
             }
 
             let mut z = 0f32;
+            let mut uv = Vec2::ZERO;
             for i in 0..3 {
                 z += points[i].z * bc_screen[i];
+                uv.x += uvs[i].x * bc_screen[i];
+                uv.y += uvs[i].y * bc_screen[i];
             }
 
             let z_idx = (x + y * WIDTH as i32) as usize;
             if z > zbuffer[z_idx] {
                 zbuffer[z_idx] = z;
-                image.put_pixel(x as u32, y as u32, *color);
+                let mut texture = diffuse.get_pixel(
+                    (uv.x * diffuse.width() as f32) as u32,
+                    (uv.y * diffuse.height() as f32) as u32,
+                );
+                texture.apply(|c| (c as f32 * intensity) as u8);
+                image.put_pixel(x as u32, y as u32, texture);
             }
         }
     }
